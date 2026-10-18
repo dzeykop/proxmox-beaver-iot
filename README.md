@@ -4,7 +4,7 @@ One-command installer for [Milesight Beaver IoT](https://www.milesight.com/beave
 
 Creates a Debian 12 VM, installs Docker via cloud-init and starts Beaver IoT automatically.
 
-**Current version:** 1.1.1
+**Current version:** 1.2.0
 
 ## Quick start
 
@@ -25,6 +25,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-beaver-i
 - Password confirmation
 - Summary before anything is created
 - Docker and Beaver IoT with auto-restart
+- Daily update check with a notice at SSH login (never installs on its own)
+- Backup and rollback for updates
 - Shows web UI, MQTT and SSH info at the end
 
 ## Recommended settings
@@ -51,10 +53,37 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-beaver-i
 
 The first boot takes a few minutes while Docker and Beaver IoT are installed.
 
+## Updating Beaver IoT
+
+The VM checks once a day for a new Beaver IoT image. **Nothing is installed automatically.**
+When an update is available, you see a notice at SSH login. You decide when to install it.
+
+| Command | What it does |
+|---|---|
+| `sudo beaver-update` | Checks and, after your confirmation, installs the update |
+| `sudo beaver-update --status` | Shows installed version, pending update and backups |
+| `sudo beaver-update --rollback` | Goes back to the version before the last update |
+
+Before every update:
+
+- Beaver IoT is stopped and `/opt/beaver-iot` is backed up to `/opt/beaver-iot-backups`
+- The last 3 backups are kept
+- The previous version is kept for a rollback
+
+Settings for the update helper are in `/etc/beaver-iot.conf`.
+
 ## Requirements
 
 - Proxmox VE 8 or 9
 - Internet access on host and VM
+
+## Changelog
+
+- **1.2.0** - Update helper `beaver-update` with daily check, login notice, backup and rollback
+- **1.1.1** - Fixed hidden warning dialogs and cancel handling
+- **1.1.0** - Host resources, recommended values, input checks, storage and bridge selection, summary
+- **1.0.1** - Added MQTT port 1883
+- **1.0.0** - First release
 
 ## Notes
 
