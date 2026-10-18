@@ -2,50 +2,62 @@
 
 One-command installer for [Milesight Beaver IoT](https://www.milesight.com/beaver-iot/) on Proxmox VE.
 
-The script creates a Debian 12 VM, installs Docker via cloud-init and starts Beaver IoT automatically.
+Creates a Debian 12 VM, installs Docker via cloud-init and starts Beaver IoT automatically.
+
+**Current version:** 1.1.1
 
 ## Quick start
 
-Run this on your Proxmox host as root (preferably via SSH):
+Run on your Proxmox host as root (preferably via SSH, so copy and paste works):
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-beaver-iot/main/install.sh)"
 ```
 
-## What it does
+## Features
 
-- Downloads the official Debian 12 cloud image
-- Lets you choose VM ID, hostname, CPU, RAM, disk, storage, bridge and web port interactively
-- Creates the VM with QEMU guest agent enabled
-- Installs Docker and runs the `milesight/beaver-iot` container
-- Shows the web UI address, MQTT port and SSH login when finished
+- Shows host resources (CPU cores, total and available RAM)
+- Shows recommended and minimum values at every step
+- Validates input and warns below the minimum
+- Storage selection with free space
+- Network bridge selection
+- Checks that the VM ID is free
+- Password confirmation
+- Summary before anything is created
+- Docker and Beaver IoT with auto-restart
+- Shows web UI, MQTT and SSH info at the end
 
-## Default settings
+## Recommended settings
 
-| Setting | Default |
+| Setting | Recommended | Minimum |
+|---|---|---|
+| CPU cores | 2 | 1 |
+| RAM | 4096 MB | 2048 MB |
+| Disk | 32 GB | 16 GB |
+
+## Ports
+
+| Service | Port |
 |---|---|
-| Cores | 2 |
-| RAM | 4096 MB |
-| Disk | 32 GB |
-| Web port | 9080 |
-| MQTT port | 1883 |
-| User | beaver |
+| Web UI | 9080 (changeable) |
+| MQTT broker | 1883 |
 
 ## After installation
 
 - Web UI: `http://<VM-IP>:9080`
-- MQTT broker: `<VM-IP>:1883`
-- Data is stored in `/opt/beaver-iot` inside the VM
+- MQTT: `<VM-IP>:1883`
+- SSH: `ssh beaver@<VM-IP>`
+- Data: `/opt/beaver-iot` inside the VM
 
 The first boot takes a few minutes while Docker and Beaver IoT are installed.
 
 ## Requirements
 
 - Proxmox VE 8 or 9
-- Internet access on the host and VM
+- Internet access on host and VM
 
 ## Notes
 
-This is a personal learning project and is not affiliated with Milesight.
+Personal learning project, not affiliated with Milesight.
 
 Made by JFFK.
