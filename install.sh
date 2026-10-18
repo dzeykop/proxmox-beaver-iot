@@ -1,44 +1,141 @@
 #!/usr/bin/env bash
 # =============================================================
 #  proxmox-beaver-iot - One-command Beaver IoT VM installer
-#  Version: 1.0.1
+#  Version: 1.1.1
 #  Repo:    github.com/dzeykop/proxmox-beaver-iot
 #  Signed:  from JFFK
 # =============================================================
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.1.1"
 IMG_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
 IMG_FILE="/var/lib/vz/template/iso/debian-12-genericcloud-amd64.qcow2"
 SNIPPET_DIR="/var/lib/vz/snippets"
 MQTTPORT="1883"
 
+# Recommended / minimum values for Beaver IoT
+REC_CORES=2;  MIN_CORES=1
+REC_RAM=4096; MIN_RAM=2048
+REC_DISK=32;  MIN_DISK=16
+
 msg()  { echo -e "\e[1;34m[INFO]\e[0m $*"; }
 ok()   { echo -e "\e[1;32m[ OK ]\e[0m $*"; }
+warn() { echo -e "\e[1;33m[WARN]\e[0m $*"; }
 fail() { echo -e "\e[1;31m[FAIL]\e[0m $*"; exit 1; }
+
+is_num() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 # --- Pre-checks ---------------------------------------------------
 [[ $EUID -eq 0 ]] || fail "Run as root."
 command -v qm >/dev/null || fail "This is not a Proxmox VE host."
 command -v whiptail >/dev/null || apt-get install -y whiptail >/dev/null
 
-whiptail --title "Beaver IoT Installer v$VERSION" --yesno \
-"This will create a new Debian 12 VM with Docker and Milesight Beaver IoT.\n\nContinue?" 12 60 || exit 0
+# --- Host resources -----------------------------------------------
+HOST_CORES=$(nproc)
+HOST_RAM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
+HOST_RAM_FREE=$(free -m | awk '/Mem:/ {print $7}')
 
-# --- Interactive settings -----------------------------------------
+whiptail --title "Beaver IoT Installer v$VERSION" --yesno \
+"This will create a new Debian 12 VM with Docker and Milesight Beaver IoT.
+
+Host resources:
+  CPU cores:      $HOST_CORES
+  RAM total:      $HOST_RAM_TOTAL MB
+  RAM available:  $HOST_RAM_FREE MB
+
+Recommended for Beaver IoT:
+  $REC_CORES cores, $REC_RAM MB RAM, $REC_DISK GB disk
+
+Continue?" 20 64 || exit 0
+
+# --- Helper: ask for a number with check ---------------------------
+# Dialogs inside use >&2 so they stay visible inside $( ... )
+ask_num() {
+  local title="$1" text="$2" def="$3" min="$4" max="$5" val
+  while true; do
+    val=$(whiptail --title "$title" --inputbox "$text" 14 64 "$def" 3>&1 1>&2 2>&3) || return 1
+    if ! is_num "$val"; then
+      whiptail --msgbox "Please enter a number." 8 40 >&2; continue
+    fi
+    if (( val > max )); then
+      whiptail --msgbox "Maximum available is $max." 8 40 >&2; continue
+    fi
+    if (( val < min )); then
+      whiptail --yesno "$val is below the recommended minimum of $min.\nUse it anyway?" 10 50 >&2 || continue
+    fi
+    echo "$val"; return 0
+  done
+}
+
+# --- VM ID and name ------------------------------------------------
 NEXTID=$(pvesh get /cluster/nextid)
-VMID=$(whiptail --inputbox "VM ID" 8 50 "$NEXTID" 3>&1 1>&2 2>&3) || exit 0
-qm status "$VMID" &>/dev/null && fail "VM ID $VMID already exists."
-VMNAME=$(whiptail --inputbox "Hostname" 8 50 "beaver-iot" 3>&1 1>&2 2>&3) || exit 0
-CORES=$(whiptail --inputbox "CPU cores" 8 50 "2" 3>&1 1>&2 2>&3) || exit 0
-RAM=$(whiptail --inputbox "RAM in MB" 8 50 "4096" 3>&1 1>&2 2>&3) || exit 0
-DISK=$(whiptail --inputbox "Disk size in GB" 8 50 "32" 3>&1 1>&2 2>&3) || exit 0
-BRIDGE=$(whiptail --inputbox "Network bridge" 8 50 "vmbr0" 3>&1 1>&2 2>&3) || exit 0
-STORAGE=$(whiptail --inputbox "VM disk storage" 8 50 "local-lvm" 3>&1 1>&2 2>&3) || exit 0
-WEBPORT=$(whiptail --inputbox "Beaver IoT web port" 8 50 "9080" 3>&1 1>&2 2>&3) || exit 0
-CIUSER=$(whiptail --inputbox "Linux user" 8 50 "beaver" 3>&1 1>&2 2>&3) || exit 0
-CIPASS=$(whiptail --passwordbox "Password for $CIUSER" 8 50 3>&1 1>&2 2>&3) || exit 0
-[[ -n "$CIPASS" ]] || fail "Password must not be empty."
+while true; do
+  VMID=$(whiptail --title "VM ID" --inputbox "VM ID (next free: $NEXTID)" 10 50 "$NEXTID" 3>&1 1>&2 2>&3) || exit 0
+  if ! is_num "$VMID"; then whiptail --msgbox "Please enter a number." 8 40; continue; fi
+  if qm status "$VMID" &>/dev/null || pct status "$VMID" &>/dev/null; then
+    whiptail --msgbox "ID $VMID is already in use." 8 40; continue
+  fi
+  break
+done
+VMNAME=$(whiptail --title "Hostname" --inputbox "Hostname" 10 50 "beaver-iot" 3>&1 1>&2 2>&3) || exit 0
+
+# --- CPU, RAM -------------------------------------------------------
+CORES=$(ask_num "CPU" "CPU cores\n\nHost has: $HOST_CORES\nRecommended: $REC_CORES\nMinimum: $MIN_CORES" \
+  "$REC_CORES" "$MIN_CORES" "$HOST_CORES") || exit 0
+RAM=$(ask_num "RAM" "RAM in MB\n\nHost total: $HOST_RAM_TOTAL MB\nHost available: $HOST_RAM_FREE MB\nRecommended: $REC_RAM MB\nMinimum: $MIN_RAM MB" \
+  "$REC_RAM" "$MIN_RAM" "$HOST_RAM_TOTAL") || exit 0
+if (( RAM > HOST_RAM_FREE )); then
+  whiptail --msgbox "Note: $RAM MB is more than currently available ($HOST_RAM_FREE MB).\nThe host may start swapping." 10 60
+fi
+
+# --- Storage selection with free space ------------------------------
+STORAGE_MENU=()
+while read -r name type status total used avail pct; do
+  STORAGE_MENU+=("$name" "$type - free: $((avail / 1024 / 1024)) GB")
+done < <(pvesm status -content images | awk 'NR>1')
+[[ ${#STORAGE_MENU[@]} -gt 0 ]] || fail "No storage for VM disks found."
+STORAGE=$(whiptail --title "Storage" --menu "Select storage for the VM disk" 16 64 6 \
+  "${STORAGE_MENU[@]}" 3>&1 1>&2 2>&3) || exit 0
+STORAGE_FREE_GB=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print int($6/1024/1024)}')
+
+DISK=$(ask_num "Disk" "Disk size in GB\n\nFree on $STORAGE: $STORAGE_FREE_GB GB\nRecommended: $REC_DISK GB\nMinimum: $MIN_DISK GB" \
+  "$REC_DISK" "$MIN_DISK" "$STORAGE_FREE_GB") || exit 0
+
+# --- Network bridge selection ---------------------------------------
+BRIDGE_MENU=()
+for b in $(ip -o link show type bridge | awk -F': ' '{print $2}'); do
+  BRIDGE_MENU+=("$b" "")
+done
+[[ ${#BRIDGE_MENU[@]} -gt 0 ]] || fail "No network bridge found."
+BRIDGE=$(whiptail --title "Network" --menu "Select network bridge" 14 50 5 \
+  "${BRIDGE_MENU[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+# --- Ports and user -------------------------------------------------
+WEBPORT=$(ask_num "Web port" "Beaver IoT web port\n\nDefault: 9080" "9080" 1 65535) || exit 0
+CIUSER=$(whiptail --title "User" --inputbox "Linux user" 10 50 "beaver" 3>&1 1>&2 2>&3) || exit 0
+while true; do
+  CIPASS=$(whiptail --title "Password" --passwordbox "Password for $CIUSER" 10 50 3>&1 1>&2 2>&3) || exit 0
+  CIPASS2=$(whiptail --title "Password" --passwordbox "Repeat password" 10 50 3>&1 1>&2 2>&3) || exit 0
+  if [[ -z "$CIPASS" ]]; then whiptail --msgbox "Password must not be empty." 8 40; continue; fi
+  if [[ "$CIPASS" != "$CIPASS2" ]]; then whiptail --msgbox "Passwords do not match." 8 40; continue; fi
+  break
+done
+
+# --- Summary --------------------------------------------------------
+whiptail --title "Summary" --yesno \
+"Please confirm:
+
+  VM ID:     $VMID
+  Hostname:  $VMNAME
+  Cores:     $CORES
+  RAM:       $RAM MB
+  Disk:      $DISK GB on $STORAGE
+  Bridge:    $BRIDGE
+  Web port:  $WEBPORT
+  MQTT port: $MQTTPORT
+  User:      $CIUSER
+
+Create the VM now?" 20 50 || exit 0
 
 # --- Enable snippets on 'local' -------------------------------------
 CONTENT=$(pvesm config local 2>/dev/null | awk '/content/ {print $2}' || true)
@@ -48,7 +145,7 @@ if [[ "$CONTENT" != *snippets* ]]; then
 fi
 mkdir -p "$SNIPPET_DIR"
 
-# --- Download image --------------------------------------------------
+# --- Download image -------------------------------------------------
 if [[ ! -f "$IMG_FILE" ]]; then
   msg "Downloading Debian 12 cloud image"
   wget -q --show-progress -O "$IMG_FILE" "$IMG_URL"
@@ -68,14 +165,15 @@ runcmd:
   - docker run -d --name beaver-iot --restart unless-stopped -v /opt/beaver-iot:/root/beaver-iot -p $WEBPORT:80 -p $MQTTPORT:1883 milesight/beaver-iot
 EOF
 
-# --- Create VM ----------------------------------------------------------
+# --- Create VM ------------------------------------------------------
 msg "Creating VM $VMID ($VMNAME)"
 qm create "$VMID" --name "$VMNAME" --cores "$CORES" --memory "$RAM" \
   --net0 virtio,bridge="$BRIDGE" --scsihw virtio-scsi-single \
   --ostype l26 --agent enabled=1 --serial0 socket --vga serial0 \
   --description "Milesight Beaver IoT - installer v$VERSION - from JFFK"
 qm importdisk "$VMID" "$IMG_FILE" "$STORAGE" >/dev/null
-qm set "$VMID" --scsi0 "$STORAGE:vm-$VMID-disk-0,discard=on,ssd=1" \
+DISKREF=$(qm config "$VMID" | awk -F': ' '/^unused0/ {print $2}')
+qm set "$VMID" --scsi0 "$DISKREF,discard=on,ssd=1" \
   --boot order=scsi0 --ide2 "$STORAGE:cloudinit" \
   --ciuser "$CIUSER" --cipassword "$CIPASS" --ipconfig0 ip=dhcp \
   --cicustom "vendor=local:snippets/beaver-$VMID.yaml" >/dev/null
@@ -83,7 +181,7 @@ qm resize "$VMID" scsi0 "${DISK}G" >/dev/null
 qm start "$VMID"
 ok "VM started"
 
-# --- Wait for IP ------------------------------------------------------
+# --- Wait for IP ----------------------------------------------------
 msg "Waiting for the VM to get an IP (first boot takes a few minutes)"
 IP=""
 for i in {1..60}; do
